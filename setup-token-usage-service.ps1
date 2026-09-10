@@ -1,77 +1,100 @@
 # Token Usage Insights - Windows Service setup
-# 將 TokenUsageInsights 安裝成真正的 Windows Service（WinSW）。
+# ASCII-only source for compatibility with Windows PowerShell 5.1.
+# Installs TokenUsageInsights as a real Windows Service by using WinSW.
+# The Windows Service runs as LocalSystem by default and therefore needs no user password.
+# User data folders are passed explicitly to TokenUsageInsights through environment variables.
 
 [CmdletBinding()]
 param(
     [int]$Port = 3003,
-    [string]$WinSWVersion = "v2.12.0",
-    [switch]$UseLocalSystem,
-    [switch]$ReinstallService
+    [string]$WinSWVersion = "v2.12.0"
 )
 
 $ErrorActionPreference = "Stop"
 
 $ServiceName = "TokenUsageInsights"
 $DisplayName = "Token Usage Insights"
-$UserProfile = $env:USERPROFILE
-$InstallDir = Join-Path $env:LOCALAPPDATA "TokenUsageInsights"
-$BinDir = Join-Path $UserProfile "bin"
+
+# Capture the profile of the user who runs this installer.
+# Run the installer from an elevated PowerShell opened by the same Windows user
+# whose Codex / Claude / Copilot data should be monitored.
+$SourceUserProfile = $env:USERPROFILE
+$SourceLocalAppData = $env:LOCALAPPDATA
+$SourceAppData = $env:APPDATA
+
+$InstallDir = Join-Path $SourceLocalAppData "TokenUsageInsights"
+$BinDir = Join-Path $SourceUserProfile "bin"
 $ServiceDir = Join-Path $InstallDir "service"
 $LogDir = Join-Path $ServiceDir "logs"
+
 $WinSWExe = Join-Path $ServiceDir "TokenUsageInsightsService.exe"
 $WinSWXml = Join-Path $ServiceDir "TokenUsageInsightsService.xml"
 $ConfigPath = Join-Path $ServiceDir "helper-config.json"
 $ControlPs1 = Join-Path $ServiceDir "token-usage-control.ps1"
 $UpdaterPs1 = Join-Path $ServiceDir "token-usage-update.ps1"
 $ControlCmd = Join-Path $BinDir "token-usage.cmd"
+
 $AppExe = Join-Path $InstallDir "token-usage-insights.exe"
 $DbPath = Join-Path $InstallDir "token_usage_insights.db"
 $DashboardUrl = "http://127.0.0.1:$Port"
-$CurrentAccount = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 function Test-Admin {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
-    $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function Escape-Xml([string]$Value) {
-    [System.Security.SecurityElement]::Escape($Value)
+    return [System.Security.SecurityElement]::Escape($Value)
 }
 
-function SecureString-ToPlainText([Security.SecureString]$SecureString) {
-    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
-    try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+function Wait-ServiceDeleted {
+    param([string]$Name, [int]$TimeoutSeconds = 15)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Service -Name $Name -ErrorAction SilentlyContinue)) {
+            return
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    throw "Timed out waiting for Windows Service '$Name' to be deleted."
+}
+
+function Stop-ExistingService {
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -ne "Stopped") {
+        Write-Host "Stopping existing Windows Service..."
+        Stop-Service -Name $ServiceName -Force
+        $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(20))
+    }
+}
+
+function Remove-ExistingService {
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        return
+    }
+
+    Stop-ExistingService
+
+    Write-Host "Removing previous Windows Service registration..."
+    if (Test-Path $WinSWExe) {
+        & $WinSWExe uninstall | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "WinSW uninstall returned ExitCode=$LASTEXITCODE. Falling back to sc.exe delete."
+            & sc.exe delete $ServiceName | Out-Host
+        }
+    }
+    else {
+        & sc.exe delete $ServiceName | Out-Host
+    }
+
+    Wait-ServiceDeleted -Name $ServiceName
 }
 
 function Write-WinSWConfig {
-    param(
-        [string]$Account,
-        [string]$Password,
-        [switch]$IncludeAccount,
-        [switch]$LocalSystem
-    )
-
-    $accountXml = ""
-    if ($IncludeAccount) {
-        if ($LocalSystem) {
-            $accountXml = @"
-  <serviceaccount>
-    <username>LocalSystem</username>
-  </serviceaccount>
-"@
-        }
-        else {
-            $accountXml = @"
-  <serviceaccount>
-    <username>$(Escape-Xml $Account)</username>
-    <password>$(Escape-Xml $Password)</password>
-    <allowservicelogon>true</allowservicelogon>
-  </serviceaccount>
-"@
-        }
-    }
+    $vscodeDir = Join-Path $SourceAppData "Code"
+    $cursorStateDb = Join-Path $SourceAppData "Cursor\User\globalStorage\state.vscdb"
 
     $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -79,8 +102,10 @@ function Write-WinSWConfig {
   <id>$ServiceName</id>
   <name>$DisplayName</name>
   <description>TokenUsageInsights local dashboard service.</description>
+
   <executable>$(Escape-Xml $AppExe)</executable>
   <workingdirectory>$(Escape-Xml $InstallDir)</workingdirectory>
+
   <startmode>Automatic</startmode>
   <delayedAutoStart>true</delayedAutoStart>
   <hidewindow>true</hidewindow>
@@ -88,100 +113,126 @@ function Write-WinSWConfig {
   <onfailure action="restart" delay="10 sec" />
   <resetfailure>1 hour</resetfailure>
 
+  <serviceaccount>
+    <username>LocalSystem</username>
+  </serviceaccount>
+
   <env name="HOST" value="127.0.0.1" />
   <env name="PORT" value="$Port" />
+
+  <env name="HOME" value="$(Escape-Xml $SourceUserProfile)" />
+  <env name="USERPROFILE" value="$(Escape-Xml $SourceUserProfile)" />
+  <env name="LOCALAPPDATA" value="$(Escape-Xml $SourceLocalAppData)" />
+  <env name="APPDATA" value="$(Escape-Xml $SourceAppData)" />
+
   <env name="INSIGHTS_DIR" value="$(Escape-Xml $InstallDir)" />
-  <env name="ANTIGRAVITY_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.gemini\antigravity-cli'))" />
-  <env name="COPILOT_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.copilot'))" />
-  <env name="COPILOT_APP_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.copilot'))" />
-  <env name="CODEX_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.codex'))" />
-  <env name="CLAUDE_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.claude'))" />
-  <env name="CURSOR_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.cursor'))" />
-  <env name="GROK_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.grok'))" />
-  <env name="PI_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.pi'))" />
-  <env name="OMP_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.omp'))" />
-  <env name="MUSE_DIR" value="$(Escape-Xml (Join-Path $UserProfile '.local\share\muse'))" />
+  <env name="ANTIGRAVITY_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.gemini\antigravity-cli'))" />
+  <env name="COPILOT_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.copilot'))" />
+  <env name="COPILOT_APP_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.copilot'))" />
+  <env name="CODEX_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.codex'))" />
+  <env name="CLAUDE_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.claude'))" />
+  <env name="CURSOR_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.cursor'))" />
+  <env name="CURSOR_STATE_DB" value="$(Escape-Xml $cursorStateDb)" />
+  <env name="VSCODE_USER_DATA_DIR" value="$(Escape-Xml $vscodeDir)" />
+  <env name="GROK_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.grok'))" />
+  <env name="PI_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.pi'))" />
+  <env name="OMP_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.omp'))" />
+  <env name="MUSE_DIR" value="$(Escape-Xml (Join-Path $SourceUserProfile '.local\share\muse'))" />
 
   <logpath>$(Escape-Xml $LogDir)</logpath>
   <log mode="roll"></log>
-$accountXml</service>
+</service>
 "@
 
     Set-Content -Path $WinSWXml -Value $xml -Encoding UTF8
 }
 
 if (-not (Test-Admin)) {
-    Write-Host "此腳本需要系統管理員權限。" -ForegroundColor Yellow
-    Write-Host "請以『系統管理員身分』開啟 PowerShell，再執行："
+    Write-Host ""
+    Write-Host "Administrator privileges are required." -ForegroundColor Yellow
+    Write-Host "Open PowerShell as Administrator and run:"
+    Write-Host ""
     Write-Host "  powershell -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -ForegroundColor Cyan
     exit 1
 }
 
-Write-Host "=== Token Usage Insights Windows Service ===" -ForegroundColor Cyan
-Write-Host "帳號      : $CurrentAccount"
-Write-Host "安裝位置  : $InstallDir"
-Write-Host "Dashboard : $DashboardUrl"
+if (-not $SourceUserProfile -or -not $SourceLocalAppData -or -not $SourceAppData) {
+    throw "USERPROFILE, LOCALAPPDATA, or APPDATA is missing."
+}
+
+Write-Host "=== Token Usage Insights Windows Service Setup ===" -ForegroundColor Cyan
+Write-Host "Source profile : $SourceUserProfile"
+Write-Host "Install dir    : $InstallDir"
+Write-Host "Dashboard      : $DashboardUrl"
+Write-Host "Service account: LocalSystem (no Windows password required)"
 Write-Host ""
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $BinDir, $ServiceDir, $LogDir | Out-Null
 
-# 移除舊版 Task Scheduler 設定，避免同時啟動兩份。
 $oldTask = Get-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
 if ($oldTask) {
-    Write-Host "移除舊版工作排程器設定..."
-    try { Stop-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue } catch {}
+    Write-Host "Removing old Task Scheduler entry..."
+    try {
+        Stop-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
+    }
+    catch {}
     Unregister-ScheduledTask -TaskName $ServiceName -Confirm:$false -ErrorAction SilentlyContinue
 }
 Remove-Item (Join-Path $InstallDir "token-usage-background.cmd") -Force -ErrorAction SilentlyContinue
 
-# 停止既有 Service / 程序。
-$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($service -and $service.Status -ne "Stopped") {
-    Stop-Service -Name $ServiceName -Force
-    $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(20))
-}
-Get-Process "token-usage-insights" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 300
+Stop-ExistingService
+Get-Process "token-usage-insights" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 400
 
-if ($service -and $ReinstallService) {
-    Write-Host "重新安裝 Windows Service..."
-    if (Test-Path $WinSWExe) { & $WinSWExe uninstall | Out-Host }
-    else { & sc.exe delete $ServiceName | Out-Host }
-    Start-Sleep -Seconds 1
-    $service = $null
-}
-
-# 確認 Port 沒被其他程式占用。
-$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -First 1
 if ($listener) {
     $owner = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
     $ownerName = if ($owner) { $owner.ProcessName } else { "PID $($listener.OwningProcess)" }
-    throw "Port $Port 已被 $ownerName 使用。請先關閉舊的 npx TokenUsageInsights 或其他占用程式。"
+    throw "Port $Port is already used by $ownerName. Stop the old npx instance or other application first."
 }
 
-# 尚未安裝 TokenUsageInsights 時，使用官方 Windows installer。
-if (!(Test-Path $AppExe)) {
-    Write-Host "安裝官方 TokenUsageInsights Windows 版本..."
+if (-not (Test-Path $AppExe)) {
+    Write-Host "Installing the official TokenUsageInsights Windows build..."
     $getScript = Join-Path $env:TEMP "token-usage-insights-get.ps1"
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.ps1" -OutFile $getScript -UseBasicParsing
+    Invoke-WebRequest `
+        -Uri "https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.ps1" `
+        -OutFile $getScript `
+        -UseBasicParsing
+
     try {
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $getScript -InstallDir $InstallDir -BinDir $BinDir -Port $Port
-        if ($LASTEXITCODE -ne 0) { throw "官方安裝程式失敗，ExitCode=$LASTEXITCODE" }
+        & powershell.exe `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File $getScript `
+            -InstallDir $InstallDir `
+            -BinDir $BinDir `
+            -Port $Port
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Official installer failed. ExitCode=$LASTEXITCODE"
+        }
     }
     finally {
         Remove-Item $getScript -Force -ErrorAction SilentlyContinue
     }
 }
-if (!(Test-Path $AppExe)) { throw "找不到 $AppExe" }
 
-# 安裝 WinSW stable 版。
-if (!(Test-Path $WinSWExe)) {
-    $url = "https://github.com/winsw/winsw/releases/download/$WinSWVersion/WinSW-x64.exe"
-    Write-Host "下載 WinSW $WinSWVersion..."
-    Invoke-WebRequest -Uri $url -OutFile $WinSWExe -UseBasicParsing
+if (-not (Test-Path $AppExe)) {
+    throw "TokenUsageInsights executable was not found: $AppExe"
 }
 
-# Helper 設定；不儲存 Windows 密碼。
+if (-not (Test-Path $WinSWExe)) {
+    $winSwUrl = "https://github.com/winsw/winsw/releases/download/$WinSWVersion/WinSW-x64.exe"
+    Write-Host "Downloading WinSW $WinSWVersion..."
+    Invoke-WebRequest -Uri $winSwUrl -OutFile $WinSWExe -UseBasicParsing
+}
+
+if (-not (Test-Path $WinSWExe)) {
+    throw "WinSW executable was not found: $WinSWExe"
+}
+
 $config = [ordered]@{
     ServiceName = $ServiceName
     Port = $Port
@@ -191,199 +242,360 @@ $config = [ordered]@{
     ServiceDir = $ServiceDir
     LogDir = $LogDir
     DbPath = $DbPath
-    UserProfile = $UserProfile
-    ServiceAccount = if ($UseLocalSystem) { "LocalSystem" } else { $CurrentAccount }
+    SourceUserProfile = $SourceUserProfile
+    SourceLocalAppData = $SourceLocalAppData
+    SourceAppData = $SourceAppData
+    ServiceAccount = "LocalSystem"
     WinSWVersion = $WinSWVersion
 }
 $config | ConvertTo-Json | Set-Content -Path $ConfigPath -Encoding UTF8
 
-# token-usage 的 PowerShell 控制器。
 $controlText = @'
 param([string]$Command = "help")
-$ErrorActionPreference = "Stop"
 
+$ErrorActionPreference = "Stop"
 $ServiceDir = Split-Path -Parent $PSCommandPath
-$config = Get-Content (Join-Path $ServiceDir "helper-config.json") -Raw | ConvertFrom-Json
+$ConfigPath = Join-Path $ServiceDir "helper-config.json"
+
+if (-not (Test-Path $ConfigPath)) {
+    throw "helper-config.json was not found. Re-run setup-token-usage-service.ps1."
+}
+
+$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
 function Test-Admin {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
-    $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Invoke-Admin([string]$Code) {
+function Invoke-AdminCode([string]$Code) {
     if (Test-Admin) {
         Invoke-Expression $Code
         return
     }
+
     $bytes = [Text.Encoding]::Unicode.GetBytes($Code)
     $encoded = [Convert]::ToBase64String($bytes)
-    $p = Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -EncodedCommand $encoded" -Wait -PassThru
-    if ($p.ExitCode -ne 0) { throw "系統管理員操作失敗，ExitCode=$($p.ExitCode)" }
+    $process = Start-Process `
+        powershell.exe `
+        -Verb RunAs `
+        -ArgumentList @("-NoProfile", "-EncodedCommand", $encoded) `
+        -Wait `
+        -PassThru
+
+    if ($process.ExitCode -ne 0) {
+        throw "Administrator operation failed. ExitCode=$($process.ExitCode)"
+    }
 }
 
 function Show-Status {
-    $s = Get-Service -Name $config.ServiceName -ErrorAction SilentlyContinue
-    if (!$s) { Write-Host "NOT INSTALLED" -ForegroundColor Red; return }
-    if ($s.Status -ne "Running") { Write-Host "STOPPED - Service: $($s.Status)" -ForegroundColor Yellow; return }
+    $service = Get-Service -Name $config.ServiceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        Write-Host "NOT INSTALLED" -ForegroundColor Red
+        return 1
+    }
+
+    if ($service.Status -ne "Running") {
+        Write-Host "STOPPED - Windows Service: $($service.Status)" -ForegroundColor Yellow
+        return 1
+    }
+
     try {
-        $r = Invoke-WebRequest $config.DashboardUrl -UseBasicParsing -TimeoutSec 2
-        if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) {
+        $response = Invoke-WebRequest $config.DashboardUrl -UseBasicParsing -TimeoutSec 2
+        if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
             Write-Host "RUNNING - $($config.DashboardUrl)" -ForegroundColor Green
-            return
+            return 0
         }
-    } catch {}
-    Write-Host "SERVICE RUNNING - Dashboard 尚未回應" -ForegroundColor Yellow
+    }
+    catch {}
+
+    Write-Host "SERVICE RUNNING - Dashboard is not ready yet." -ForegroundColor Yellow
+    return 2
 }
 
 switch ($Command.ToLowerInvariant()) {
-    "status"  { Show-Status }
-    "open"    { Start-Process $config.DashboardUrl }
-    "start"   { Invoke-Admin "Start-Service -Name '$($config.ServiceName)'"; Start-Sleep -Seconds 1; Show-Status }
-    "stop"    { Invoke-Admin "Stop-Service -Name '$($config.ServiceName)' -Force"; Write-Host "Token Usage Insights 已停止。" -ForegroundColor Green }
-    "restart" { Invoke-Admin "Restart-Service -Name '$($config.ServiceName)' -Force"; Start-Sleep -Seconds 1; Show-Status }
-    "update"  {
+    "status" {
+        exit (Show-Status)
+    }
+
+    "open" {
+        Start-Process $config.DashboardUrl
+        exit 0
+    }
+
+    "start" {
+        Invoke-AdminCode "Start-Service -Name '$($config.ServiceName)'"
+        Start-Sleep -Seconds 1
+        exit (Show-Status)
+    }
+
+    "stop" {
+        Invoke-AdminCode "Stop-Service -Name '$($config.ServiceName)' -Force"
+        Write-Host "Token Usage Insights stopped." -ForegroundColor Green
+        exit 0
+    }
+
+    "restart" {
+        Invoke-AdminCode "Restart-Service -Name '$($config.ServiceName)' -Force"
+        Start-Sleep -Seconds 1
+        exit (Show-Status)
+    }
+
+    "update" {
         $updater = Join-Path $ServiceDir "token-usage-update.ps1"
-        $code = "& '" + $updater.Replace("'", "''") + "'"
-        Invoke-Admin $code
+        if (-not (Test-Path $updater)) {
+            throw "Updater was not found: $updater"
+        }
+        $escaped = $updater.Replace("'", "''")
+        Invoke-AdminCode "& '$escaped'"
+        exit 0
     }
+
     "version" {
-        $vf = Join-Path $config.InstallDir "VERSION"
-        if (Test-Path $vf) { Write-Host "Installed version: $((Get-Content $vf -TotalCount 1).Trim())" }
-        else { Write-Host "Installed version: unknown" }
+        $versionFile = Join-Path $config.InstallDir "VERSION"
+        if (Test-Path $versionFile) {
+            Write-Host "Installed version: $((Get-Content $versionFile -TotalCount 1).Trim())"
+        }
+        else {
+            Write-Host "Installed version: unknown"
+        }
+        exit 0
     }
+
     "service" {
         Get-CimInstance Win32_Service -Filter "Name='$($config.ServiceName)'" |
-            Select-Object Name, State, StartMode, StartName, PathName | Format-List
+            Select-Object Name, State, StartMode, StartName, PathName |
+            Format-List
+        exit 0
     }
-    "logs" { Start-Process explorer.exe $config.LogDir }
+
+    "logs" {
+        Start-Process explorer.exe $config.LogDir
+        exit 0
+    }
+
     default {
         Write-Host "Usage:"
-        Write-Host "  token-usage status    檢查 Service 與 Dashboard"
-        Write-Host "  token-usage open      開啟 Dashboard"
-        Write-Host "  token-usage start     啟動 Service（會要求 UAC）"
-        Write-Host "  token-usage stop      停止 Service（會要求 UAC）"
-        Write-Host "  token-usage restart   重新啟動 Service（會要求 UAC）"
-        Write-Host "  token-usage update    更新 TokenUsageInsights（會要求 UAC）"
-        Write-Host "  token-usage version   顯示版本"
-        Write-Host "  token-usage service   顯示 Service 詳細資料"
-        Write-Host "  token-usage logs      開啟 Service log 目錄"
+        Write-Host "  token-usage status    Check Windows Service and Dashboard"
+        Write-Host "  token-usage open      Open Dashboard"
+        Write-Host "  token-usage start     Start Windows Service (UAC may appear)"
+        Write-Host "  token-usage stop      Stop Windows Service (UAC may appear)"
+        Write-Host "  token-usage restart   Restart Windows Service (UAC may appear)"
+        Write-Host "  token-usage update    Update TokenUsageInsights (UAC may appear)"
+        Write-Host "  token-usage version   Show installed TokenUsageInsights version"
+        Write-Host "  token-usage service   Show Windows Service details"
+        Write-Host "  token-usage logs      Open the WinSW log directory"
+        exit 0
     }
 }
 '@
-Set-Content -Path $ControlPs1 -Value $controlText -Encoding UTF8
+Set-Content -Path $ControlPs1 -Value $controlText -Encoding ASCII
 
-# TokenUsageInsights 本體更新器；Service 設定不會被官方 installer 覆蓋。
 $updaterText = @'
 $ErrorActionPreference = "Stop"
+
 $ServiceDir = Split-Path -Parent $PSCommandPath
-$config = Get-Content (Join-Path $ServiceDir "helper-config.json") -Raw | ConvertFrom-Json
+$ConfigPath = Join-Path $ServiceDir "helper-config.json"
+$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+
+function Test-Admin {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-Admin)) {
+    $quoted = '"' + $PSCommandPath + '"'
+    $args = "-NoProfile -ExecutionPolicy Bypass -File $quoted"
+    $process = Start-Process powershell.exe -Verb RunAs -ArgumentList $args -Wait -PassThru
+    exit $process.ExitCode
+}
 
 $service = Get-Service -Name $config.ServiceName -ErrorAction Stop
 if ($service.Status -ne "Stopped") {
-    Write-Host "停止 Windows Service..."
+    Write-Host "Stopping Windows Service..."
     Stop-Service -Name $config.ServiceName -Force
     $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(20))
 }
 
 $backupDir = Join-Path $config.InstallDir "backups"
 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+
 if (Test-Path $config.DbPath) {
-    $backup = Join-Path $backupDir ("token_usage_insights-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".db")
-    Copy-Item -Force $config.DbPath $backup
-    Write-Host "資料庫備份：$backup"
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $backupPath = Join-Path $backupDir "token_usage_insights-$stamp.db"
+    Copy-Item -Force $config.DbPath $backupPath
+    Write-Host "Database backup: $backupPath"
 }
 
-$vf = Join-Path $config.InstallDir "VERSION"
-$before = if (Test-Path $vf) { (Get-Content $vf -TotalCount 1).Trim() } else { "unknown" }
+$versionFile = Join-Path $config.InstallDir "VERSION"
+$before = if (Test-Path $versionFile) {
+    (Get-Content $versionFile -TotalCount 1).Trim()
+}
+else {
+    "unknown"
+}
+
 $getScript = Join-Path $env:TEMP "token-usage-insights-get.ps1"
 
 try {
-    Write-Host "更新官方 TokenUsageInsights..."
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.ps1" -OutFile $getScript -UseBasicParsing
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $getScript -InstallDir $config.InstallDir -BinDir $config.BinDir -Port ([int]$config.Port)
-    if ($LASTEXITCODE -ne 0) { throw "官方安裝程式失敗，ExitCode=$LASTEXITCODE" }
+    Write-Host "Downloading and installing the latest official TokenUsageInsights..."
+    Invoke-WebRequest `
+        -Uri "https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.ps1" `
+        -OutFile $getScript `
+        -UseBasicParsing
+
+    & powershell.exe `
+        -NoProfile `
+        -ExecutionPolicy Bypass `
+        -File $getScript `
+        -InstallDir $config.InstallDir `
+        -BinDir $config.BinDir `
+        -Port ([int]$config.Port)
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Official installer failed. ExitCode=$LASTEXITCODE"
+    }
 }
 catch {
-    Write-Host "更新失敗：$($_.Exception.Message)" -ForegroundColor Red
-    try { Start-Service -Name $config.ServiceName } catch {}
-    throw
+    Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
+    try {
+        Start-Service -Name $config.ServiceName -ErrorAction SilentlyContinue
+    }
+    catch {}
+    exit 1
 }
 finally {
     Remove-Item $getScript -Force -ErrorAction SilentlyContinue
 }
 
 Start-Service -Name $config.ServiceName
-$after = if (Test-Path $vf) { (Get-Content $vf -TotalCount 1).Trim() } else { "unknown" }
-if ($before -eq $after) { Write-Host "已是最新版本：$after" -ForegroundColor Green }
-else { Write-Host "更新完成：$before -> $after" -ForegroundColor Green }
-Write-Host "Service 已重新啟動：$($config.DashboardUrl)" -ForegroundColor Green
-'@
-Set-Content -Path $UpdaterPs1 -Value $updaterText -Encoding UTF8
 
-# CMD shim。
-$cmdText = @"
-@echo off
-setlocal
-set "CMD=%~1"
-if "%CMD%"=="" set "CMD=help"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ControlPs1" -Command "%CMD%"
-exit /b %ERRORLEVEL%
-"@
-Set-Content -Path $ControlCmd -Value $cmdText -Encoding ASCII
-
-# 將 ~/bin 加入使用者 PATH。
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$pathItems = if ($userPath) { @($userPath.Split(';') | Where-Object { $_ }) } else { @() }
-if ($pathItems -notcontains $BinDir) {
-    $newPath = if ($userPath) { "$userPath;$BinDir" } else { $BinDir }
-    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+$deadline = (Get-Date).AddSeconds(20)
+$ready = $false
+while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 500
+    try {
+        $response = Invoke-WebRequest $config.DashboardUrl -UseBasicParsing -TimeoutSec 2
+        if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+            $ready = $true
+            break
+        }
+    }
+    catch {}
 }
 
-# 第一次建立 Service 時設定登入帳號。
-$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if (!$service) {
-    if ($UseLocalSystem) {
-        Write-Host "使用 LocalSystem 安裝 Service。" -ForegroundColor Yellow
-        Write-WinSWConfig -IncludeAccount -LocalSystem
-        & $WinSWExe install | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "WinSW 安裝失敗，ExitCode=$LASTEXITCODE" }
-        Write-WinSWConfig
-    }
-    else {
-        Write-Host "Service 將以目前帳號執行：$CurrentAccount" -ForegroundColor Cyan
-        Write-Host "請輸入 Windows 帳號『密碼』，不是 Windows Hello PIN。"
-        $securePassword = Read-Host "Windows 密碼" -AsSecureString
-        $plainPassword = SecureString-ToPlainText $securePassword
-        try {
-            Write-WinSWConfig -Account $CurrentAccount -Password $plainPassword -IncludeAccount
-            & $WinSWExe install | Out-Host
-            if ($LASTEXITCODE -ne 0) { throw "WinSW 安裝失敗，ExitCode=$LASTEXITCODE" }
-        }
-        finally {
-            $plainPassword = $null
-            # SCM 已保存 Service credential 後，立刻移除 XML 裡的明碼密碼。
-            Write-WinSWConfig
-        }
-    }
+$after = if (Test-Path $versionFile) {
+    (Get-Content $versionFile -TotalCount 1).Trim()
 }
 else {
-    # 已存在時保留 SCM 裡的 Service account，只更新 runtime config。
-    Write-WinSWConfig
+    "unknown"
 }
 
+if ($before -eq $after) {
+    Write-Host "Already up to date: $after" -ForegroundColor Green
+}
+else {
+    Write-Host "Updated: $before -> $after" -ForegroundColor Green
+}
+
+if ($ready) {
+    Write-Host "RUNNING - $($config.DashboardUrl)" -ForegroundColor Green
+    exit 0
+}
+
+Write-Host "Service is running, but the Dashboard is not ready yet." -ForegroundColor Yellow
+Write-Host "Run: token-usage status"
+Write-Host "Logs: token-usage logs"
+exit 2
+'@
+Set-Content -Path $UpdaterPs1 -Value $updaterText -Encoding ASCII
+
+$cmdText = @'
+@echo off
+setlocal
+set "CONTROL=%LOCALAPPDATA%\TokenUsageInsights\service\token-usage-control.ps1"
+if not exist "%CONTROL%" (
+  echo Token Usage Insights helper is not installed correctly.
+  echo Re-run setup-token-usage-service.ps1 as Administrator.
+  exit /b 1
+)
+set "CMD=%~1"
+if "%CMD%"=="" set "CMD=help"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CONTROL%" -Command "%CMD%"
+exit /b %ERRORLEVEL%
+'@
+Set-Content -Path $ControlCmd -Value $cmdText -Encoding ASCII
+
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$pathParts = @()
+if ($userPath) {
+    $pathParts = $userPath.Split(";") | Where-Object { $_ }
+}
+
+if ($pathParts -notcontains $BinDir) {
+    $newPath = if ([string]::IsNullOrWhiteSpace($userPath)) {
+        $BinDir
+    }
+    else {
+        "$userPath;$BinDir"
+    }
+
+    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    Write-Host "Added $BinDir to the user PATH."
+}
+
+Remove-ExistingService
+Write-WinSWConfig
+
+Write-Host "Installing Windows Service as LocalSystem..."
+& $WinSWExe install | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "WinSW install failed. ExitCode=$LASTEXITCODE"
+}
+
+Write-Host "Starting Windows Service..."
 Start-Service -Name $ServiceName
-Start-Sleep -Seconds 2
+
+$deadline = (Get-Date).AddSeconds(20)
+$ready = $false
+while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 500
+    try {
+        $response = Invoke-WebRequest $DashboardUrl -UseBasicParsing -TimeoutSec 2
+        if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+            $ready = $true
+            break
+        }
+    }
+    catch {}
+}
+
 $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
 
 Write-Host ""
-Write-Host "=== 設定完成 ===" -ForegroundColor Green
+Write-Host "=== Setup complete ===" -ForegroundColor Green
 Write-Host "Windows Service : $ServiceName"
-Write-Host "執行帳號        : $($serviceInfo.StartName)"
+Write-Host "Service account : $($serviceInfo.StartName)"
+Write-Host "Source profile  : $SourceUserProfile"
 Write-Host "Dashboard       : $DashboardUrl"
+Write-Host "Install dir     : $InstallDir"
 Write-Host "Service logs    : $LogDir"
 Write-Host ""
-Write-Host "請重新開一個 CMD / PowerShell，然後執行："
+Write-Host "Open a NEW CMD or PowerShell window and use:"
 Write-Host "  token-usage status"
 Write-Host "  token-usage open"
 Write-Host "  token-usage update"
+Write-Host "  token-usage service"
+Write-Host "  token-usage logs"
+Write-Host ""
+
+if ($ready) {
+    Write-Host "RUNNING - $DashboardUrl" -ForegroundColor Green
+    exit 0
+}
+
+Write-Host "The service was installed, but the Dashboard is not ready yet." -ForegroundColor Yellow
+Write-Host "Run 'token-usage status' and 'token-usage logs' for diagnostics."
+exit 2
