@@ -1,0 +1,46 @@
+name: PowerShell Syntax Check
+
+on:
+  push:
+    paths:
+      - "**/*.ps1"
+      - ".github/workflows/powershell-check.yml"
+  pull_request:
+    paths:
+      - "**/*.ps1"
+      - ".github/workflows/powershell-check.yml"
+
+jobs:
+  parse:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Path . -Filter *.ps1 -Recurse | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "::error file=$($_.FullName)::PowerShell parser errors found"
+              $errors | ForEach-Object { Write-Host $_.Message }
+            }
+            else {
+              Write-Host "OK: $($_.FullName)"
+            }
+          }
+
+          if ($failed) {
+            throw "PowerShell syntax check failed."
+          }
