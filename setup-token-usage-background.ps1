@@ -1,15 +1,15 @@
 # Compatibility entry point.
-# The helper has migrated from Windows Task Scheduler to a real Windows Service.
-# New installations should use setup-token-usage-service.ps1 directly.
+# This helper now uses a real Windows Service instead of Task Scheduler.
 
 $ErrorActionPreference = "Stop"
+
 $serviceSetup = Join-Path $PSScriptRoot "setup-token-usage-service.ps1"
 
-if (!(Test-Path $serviceSetup)) {
-    throw "找不到 $serviceSetup。請重新 clone / git pull 完整 Repository，不要只下載這個單一檔案。"
+if (-not (Test-Path $serviceSetup)) {
+    throw "setup-token-usage-service.ps1 was not found. Run git pull or clone the full repository."
 }
 
-Write-Host "此 Helper 已改用 Windows Service。" -ForegroundColor Cyan
-Write-Host "轉交給 setup-token-usage-service.ps1..."
+Write-Host "This helper now uses a Windows Service."
+Write-Host "Forwarding to setup-token-usage-service.ps1..."
 & $serviceSetup @args
 exit $LASTEXITCODE
