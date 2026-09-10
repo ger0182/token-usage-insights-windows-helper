@@ -2,26 +2,16 @@
 
 這是一個給 [TokenUsageInsights](https://github.com/doggy8088/TokenUsageInsights) 使用的 **Windows Service 輔助工具**。
 
-目的是讓 TokenUsageInsights 真正以 Windows Service 常駐執行：
+主要目的是讓 TokenUsageInsights 真正以 Windows Service 常駐執行，不需要一直開著 CMD 或 PowerShell，也不需要使用 `npx` 前景執行。
 
-- 不需要一直開著 CMD / PowerShell
-- Windows 開機後自動啟動
-- 不需要等使用者登入後才啟動
-- 可以用 `token-usage` 指令管理服務
-- 更新 TokenUsageInsights 時保留原本 SQLite 使用紀錄
+> 此 Repository 為非官方輔助工具。TokenUsageInsights 本體由原始專案維護。
 
-> 此 Repository 為**非官方輔助工具**。TokenUsageInsights 本體由原始專案維護。
-
----
-
-## 架構
-
-目前版本已經從舊的「Windows 工作排程器」改為真正的 Windows Service：
+## 目前架構
 
 ```text
 Windows 開機
    ↓
-Windows Service Manager
+Windows Service Control Manager
    ↓
 WinSW
    ↓
@@ -30,308 +20,241 @@ token-usage-insights.exe
 http://127.0.0.1:3003
 ```
 
-Service 名稱：
+Service 預設使用：
 
 ```text
-TokenUsageInsights
+LocalSystem
 ```
 
-Service 設定為：
+因此：
+
+- 不需要輸入 Windows 帳號密碼
+- 不依賴目前 CMD / PowerShell 視窗
+- 不需要使用者登入後才啟動
+- Windows 開機後可自動啟動
+- 程式異常退出時由 Windows Service / WinSW 自動重新啟動
+
+## 為什麼 LocalSystem 還能讀到我的 Codex / Claude 資料？
+
+LocalSystem 本身的使用者目錄不是你的 Windows 使用者目錄。
+
+因此安裝程式會在安裝當下記住目前使用者的路徑，例如：
 
 ```text
-Automatic + Delayed Auto Start
+C:\Users\<你的使用者名稱>
 ```
 
-因此電腦重新開機後，即使沒有保持 CMD / PowerShell 視窗，TokenUsageInsights 仍會在背景執行。
+並把 TokenUsageInsights 官方支援的資料來源環境變數明確指定到該使用者目錄，例如：
+
+```text
+CODEX_DIR
+CLAUDE_DIR
+COPILOT_DIR
+COPILOT_APP_DIR
+CURSOR_DIR
+CURSOR_STATE_DB
+VSCODE_USER_DATA_DIR
+GROK_DIR
+PI_DIR
+OMP_DIR
+MUSE_DIR
+ANTIGRAVITY_DIR
+INSIGHTS_DIR
+```
+
+因此即使 Service 身分是 LocalSystem，TokenUsageInsights 仍會掃描原本使用者的 Codex、Claude、Copilot 等資料。
+
+> 建議從你平常使用 Codex / Claude 的那個 Windows 帳號，開啟「系統管理員 PowerShell」執行安裝。安裝程式會以當下的 `USERPROFILE`、`LOCALAPPDATA`、`APPDATA` 作為資料來源路徑。
 
 ---
 
 ## 系統需求
 
-- Windows 10 / 11 x64
-- PowerShell
-- 系統管理員權限（安裝 / 移除 Windows Service 時需要）
-- 安裝與更新時需要網路連線
+- Windows 10 / 11
+- Windows PowerShell 5.1 或 PowerShell 7
+- 系統管理員權限
+- 安裝與更新時需要網路
+- Git（若使用 clone / pull）
 
-Service Wrapper 使用：
+## 初次安裝
 
-```text
-WinSW v2.12.0
-```
-
-目前固定使用 WinSW 2.x stable 版本，避免未來 WinSW major version 行為改變造成 Helper 失效。
-
----
-
-# 第一次安裝
-
-## 1. Clone Repository
-
-建議不要從 GitHub 頁面直接另存 `.ps1`，避免把 HTML 頁面誤存成 PowerShell 腳本。
-
-請直接 Clone：
+建議直接 Clone 完整 Repository，不要從 GitHub 網頁另存單一 `.ps1` 檔案。
 
 ```cmd
 git clone https://github.com/ger0182/token-usage-insights-windows-helper.git
 cd token-usage-insights-windows-helper
 ```
 
-如果已經 Clone 過：
-
-```cmd
-git pull
-```
-
----
-
-## 2. 關閉舊的 TokenUsageInsights
-
-如果目前有 CMD 正在執行：
-
-```cmd
-npx -y token-usage-insights
-```
-
-請先關閉。
-
-如果先前使用過這個 Repository 的「工作排程器版」，不用手動移除；新版 Service 安裝程式會自動清掉舊的：
-
-```text
-TokenUsageInsights 工作排程器
-```
-
-避免同時啟動兩份 TokenUsageInsights。
-
----
-
-## 3. 用系統管理員 PowerShell 安裝
-
-開啟：
-
-```text
-PowerShell → 以系統管理員身分執行
-```
-
-切到 Repository 目錄後執行：
+接著使用 **系統管理員 PowerShell**：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-service.ps1"
 ```
 
-腳本會自動：
+安裝程式會：
 
-1. 檢查 / 安裝官方 Windows 版 TokenUsageInsights
-2. 下載 WinSW
-3. 移除舊版工作排程器設定
-4. 建立 Windows Service
-5. 設定 `127.0.0.1:3003`
-6. 設定 Codex / Claude / Copilot / Cursor 等資料來源路徑
-7. 建立 `token-usage` 管理指令
-8. 啟動 Service
+1. 移除舊版 `TokenUsageInsights` 工作排程器
+2. 停止舊的 TokenUsageInsights 程序
+3. 若尚未安裝，下載官方 Windows 版 TokenUsageInsights
+4. 下載 WinSW
+5. 建立真正的 Windows Service
+6. 將 Service 設為 LocalSystem
+7. 明確設定原本 Windows 使用者的 Codex / Claude 等資料路徑
+8. 建立 `token-usage` 管理指令
+9. 啟動 Service
+10. 檢查 Dashboard
 
----
-
-# Windows Service 帳號密碼
-
-第一次建立 Service 時，預設會顯示：
-
-```text
-Service 將以目前帳號執行：電腦名稱\使用者名稱
-請輸入 Windows 帳號『密碼』，不是 Windows Hello PIN。
-```
-
-請輸入你的 **Windows 帳號密碼**。
-
-不能輸入：
-
-```text
-Windows Hello PIN
-```
-
-如果使用 Microsoft Account 登入 Windows，通常要輸入 Microsoft Account 的帳號密碼。
-
-這個密碼只在第一次向 Windows Service Manager 註冊 Service 時使用。安裝完成後，Helper 會立刻把 WinSW XML 裡的明碼密碼移除，不會寫進 Git Repository。
-
-Windows 會自行保存 Service 登入所需的 credential。
-
-### Windows 密碼之後改過
-
-如果未來修改 Windows 密碼，Service 可能因舊 credential 無法登入。
-
-重新執行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-service.ps1" -ReinstallService
-```
-
-再輸入新的 Windows 密碼即可。
-
----
-
-# 不想輸入 Windows 密碼：LocalSystem 模式
-
-也可以使用：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-service.ps1" -UseLocalSystem
-```
-
-如果已經裝過 Service，要切換帳號模式：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-service.ps1" -ReinstallService -UseLocalSystem
-```
-
-這樣不需要 Windows 密碼。
-
-不過 **LocalSystem 權限很高**，一般情況仍建議使用自己的 Windows 帳號執行 Service。
-
-Helper 即使在 LocalSystem 模式下，也會明確指定原本使用者的資料路徑，例如：
-
-```text
-%USERPROFILE%\.codex
-%USERPROFILE%\.claude
-%USERPROFILE%\.copilot
-%USERPROFILE%\.cursor
-```
-
-避免 TokenUsageInsights 跑到 SystemProfile 去找資料。
-
----
-
-# 安裝完成後
-
-重新開一個新的 CMD / PowerShell，讓 `PATH` 更新生效。
-
-檢查：
-
-```cmd
-token-usage status
-```
-
-正常會看到：
+正常完成後會看到類似：
 
 ```text
 RUNNING - http://127.0.0.1:3003
 ```
 
-接著即使把 PowerShell / CMD 全部關掉，Service 還是會繼續執行。
+## 從舊版工作排程器升級
 
-可以直接重新開一個 PowerShell 再確認：
+如果你之前已經安裝過本 Repository 的舊版：
+
+```cmd
+cd token-usage-insights-windows-helper
+git pull
+```
+
+然後開啟 **系統管理員 PowerShell**：
 
 ```powershell
-token-usage status
+powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-service.ps1"
 ```
 
-仍應該顯示：
+新的安裝腳本會自動移除舊的 Task Scheduler 設定並改成 Windows Service。
 
-```text
-RUNNING - http://127.0.0.1:3003
+舊的相容入口仍然保留：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-background.ps1"
 ```
+
+它會轉交給新的 Service 安裝程式。
 
 ---
 
-# 常用指令
+## 常用指令
 
-| 指令 | 功能 |
-| --- | --- |
-| `token-usage status` | 檢查 Windows Service 與 Dashboard |
-| `token-usage open` | 開啟 TokenUsageInsights Dashboard |
-| `token-usage start` | 啟動 Windows Service |
-| `token-usage stop` | 停止 Windows Service |
-| `token-usage restart` | 重新啟動 Windows Service |
-| `token-usage update` | 更新官方 TokenUsageInsights |
-| `token-usage version` | 查看 TokenUsageInsights 版本 |
-| `token-usage service` | 顯示 Windows Service 詳細資料 |
-| `token-usage logs` | 開啟 WinSW Service log 目錄 |
-
-直接執行：
-
-```cmd
-token-usage
-```
-
-會顯示指令列表。
-
-### UAC
-
-以下操作會修改 Windows Service，因此可能跳出 UAC：
-
-```cmd
-token-usage start
-token-usage stop
-token-usage restart
-token-usage update
-```
-
-一般查看狀態不需要系統管理員權限：
+安裝完成後，請重新開一個新的 CMD 或 PowerShell。
 
 ```cmd
 token-usage status
 token-usage open
+token-usage start
+token-usage stop
+token-usage restart
+token-usage update
 token-usage version
 token-usage service
 token-usage logs
 ```
 
+功能：
+
+| 指令 | 功能 |
+| --- | --- |
+| `token-usage status` | 檢查 Windows Service 與 Dashboard |
+| `token-usage open` | 開啟 Dashboard |
+| `token-usage start` | 啟動 Windows Service |
+| `token-usage stop` | 停止 Windows Service |
+| `token-usage restart` | 重新啟動 Windows Service |
+| `token-usage update` | 更新官方 TokenUsageInsights |
+| `token-usage version` | 顯示目前版本 |
+| `token-usage service` | 顯示 Service 詳細資訊 |
+| `token-usage logs` | 開啟 WinSW Log 目錄 |
+
+`start`、`stop`、`restart`、`update` 需要系統管理員權限，因此一般 PowerShell 執行時可能跳出 UAC。
+
+## 確認是否真的脫離 PowerShell
+
+執行：
+
+```powershell
+token-usage status
+```
+
+正常：
+
+```text
+RUNNING - http://127.0.0.1:3003
+```
+
+然後把 PowerShell 完全關閉。
+
+重新開一個新的 PowerShell：
+
+```powershell
+token-usage status
+```
+
+如果仍然顯示：
+
+```text
+RUNNING - http://127.0.0.1:3003
+```
+
+代表 Windows Service 已正常常駐。
+
 ---
 
-# Dashboard
-
-網址：
+## Dashboard
 
 ```text
 http://127.0.0.1:3003
 ```
 
-Helper 刻意將：
+Helper 預設把 `HOST` 固定為：
 
 ```text
-HOST=127.0.0.1
+127.0.0.1
 ```
 
-而不是 TokenUsageInsights 預設的：
-
-```text
-0.0.0.0
-```
-
-因此預設只有這台電腦可以連線，不會直接開放給區網其他裝置。
+因此 Dashboard 只允許本機存取，不會直接暴露給區網其他裝置。
 
 ---
 
-# Service 如何找到 Codex / Claude 資料
+## Windows Service
 
-Helper 會把 TokenUsageInsights 官方支援的環境變數寫進 WinSW Service 設定：
-
-```text
-INSIGHTS_DIR
-ANTIGRAVITY_DIR
-COPILOT_DIR
-COPILOT_APP_DIR
-CODEX_DIR
-CLAUDE_DIR
-CURSOR_DIR
-GROK_DIR
-PI_DIR
-OMP_DIR
-MUSE_DIR
-```
-
-例如：
+Service 名稱：
 
 ```text
-CODEX_DIR  = C:\Users\<使用者>\.codex
-CLAUDE_DIR = C:\Users\<使用者>\.claude
+TokenUsageInsights
 ```
 
-因此即使是在 Windows Service 環境執行，仍會讀取原本帳號底下的 Coding Agent Session。
+可使用 Windows 內建工具確認：
+
+```powershell
+Get-Service TokenUsageInsights
+```
+
+查看詳細資料：
+
+```powershell
+Get-CimInstance Win32_Service -Filter "Name='TokenUsageInsights'" |
+    Select-Object Name,State,StartMode,StartName,PathName
+```
+
+正常的 `StartName` 應該是：
+
+```text
+LocalSystem
+```
+
+也可以使用：
+
+```cmd
+token-usage service
+```
 
 ---
 
-# 安裝位置
+## 安裝位置
 
-TokenUsageInsights 本體：
+TokenUsageInsights：
 
 ```text
 %LOCALAPPDATA%\TokenUsageInsights
@@ -340,31 +263,24 @@ TokenUsageInsights 本體：
 通常是：
 
 ```text
-C:\Users\<使用者>\AppData\Local\TokenUsageInsights
-```
-
-主要檔案：
-
-```text
-%LOCALAPPDATA%\TokenUsageInsights\token-usage-insights.exe
-%LOCALAPPDATA%\TokenUsageInsights\token_usage_insights.db
+C:\Users\<使用者名稱>\AppData\Local\TokenUsageInsights
 ```
 
 Windows Service 相關檔案：
 
 ```text
-%LOCALAPPDATA%\TokenUsageInsights\service\
+%LOCALAPPDATA%\TokenUsageInsights\service
 ```
 
-其中包含：
+包含：
 
 ```text
-TokenUsageInsightsService.exe   WinSW
-TokenUsageInsightsService.xml   Service 設定
-token-usage-control.ps1         管理指令
-token-usage-update.ps1          更新程式
-helper-config.json               Helper 設定
-logs\                            Service logs
+TokenUsageInsightsService.exe
+TokenUsageInsightsService.xml
+helper-config.json
+token-usage-control.ps1
+token-usage-update.ps1
+logs\
 ```
 
 管理指令：
@@ -373,11 +289,17 @@ logs\                            Service logs
 %USERPROFILE%\bin\token-usage.cmd
 ```
 
+資料庫：
+
+```text
+%LOCALAPPDATA%\TokenUsageInsights\token_usage_insights.db
+```
+
 ---
 
-# 更新 TokenUsageInsights 本體
+## 更新 TokenUsageInsights 本體
 
-官方 TokenUsageInsights 有新版時：
+之後官方 TokenUsageInsights 有新版時：
 
 ```cmd
 token-usage update
@@ -387,241 +309,241 @@ token-usage update
 
 ```text
 停止 Windows Service
-        ↓
+   ↓
 備份 SQLite
-        ↓
-執行官方 get.ps1
-        ↓
-更新 TokenUsageInsights
-        ↓
-保留 Windows Service 設定
-        ↓
-重新啟動 Service
+   ↓
+下載官方最新版
+   ↓
+執行官方 Windows installer
+   ↓
+保留原本資料庫
+   ↓
+重新啟動 Windows Service
+   ↓
+檢查 Dashboard
 ```
 
-更新前會把資料庫備份到：
+備份會放在：
 
 ```text
-%LOCALAPPDATA%\TokenUsageInsights\backups\
+%LOCALAPPDATA%\TokenUsageInsights\backups
 ```
 
 例如：
 
 ```text
-token_usage_insights-20260910-143000.db
+token_usage_insights-20260910-163000.db
 ```
 
-因此：
-
-```cmd
-token-usage update
-```
-
-**不會重新安裝 WinSW Service，也不需要重新輸入 Windows 密碼。**
+這個更新只更新 **TokenUsageInsights 本體**，不需要重新建立 Service，也不需要 Windows 帳號密碼。
 
 ---
 
-# 更新 Windows Helper
+## 更新這個 Helper Repository
 
-這個 Repository 自己有更新時：
+Helper 本身有修改時：
 
 ```cmd
 git pull
 ```
 
-然後用系統管理員 PowerShell 重新執行：
+如果只有 README 修改，不必重跑安裝。
+
+如果：
+
+```text
+setup-token-usage-service.ps1
+setup-token-usage-background.ps1
+uninstall-token-usage-service.ps1
+```
+
+有更新，建議重新使用系統管理員 PowerShell 執行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-service.ps1"
 ```
 
-如果 Service 已經存在，腳本會保留目前 Windows Service 登入帳號，只更新 Helper / WinSW runtime 設定。
+腳本可以重複執行；它會重新整理 Service 設定。
 
-兩種更新不要混淆：
-
-```text
-token-usage update
-= 更新 TokenUsageInsights 本體
-
-git pull + setup-token-usage-service.ps1
-= 更新這個 Windows Helper
-```
+> `token-usage update` = 更新 TokenUsageInsights 本體  
+> `git pull` + 重跑 setup = 更新 Windows Helper
 
 ---
 
-# 從舊版工作排程器升級
+## PowerShell 5.1 編碼相容性
 
-如果曾經使用舊版：
+Windows PowerShell 5.1 對「UTF-8 無 BOM」腳本的處理與 PowerShell 7 不同。
 
-```text
-setup-token-usage-background.ps1
-```
+如果 `.ps1` 直接包含中文字串，可能出現亂碼及 ParserError，例如 `UnexpectedToken`、`MissingExpressionAfterOperator`。
 
-新版仍保留這個檔案作為相容入口。
+因此本 Repository 的所有 `.ps1` 執行腳本都刻意維持 **ASCII-only**。
 
-執行它會轉交到：
+繁體中文說明只放在 README。
 
-```text
-setup-token-usage-service.ps1
-```
-
-但建議之後直接使用新的檔名。
-
-Service installer 會自動移除舊的 Windows Task Scheduler：
+Repository 也有 GitHub Actions 同時使用：
 
 ```text
-TokenUsageInsights
+Windows PowerShell 5.1
+PowerShell 7
 ```
 
-以及舊的：
-
-```text
-token-usage-background.cmd
-```
+做 Parser 語法檢查。
 
 ---
 
-# 疑難排解
+## 如果 GitHub 下載到 HTML 而不是 PowerShell
 
-## 1. 檢查 Service
+不要在 GitHub 檔案頁直接「網頁另存新檔」。
+
+最推薦：
 
 ```cmd
-token-usage service
+git clone https://github.com/ger0182/token-usage-insights-windows-helper.git
 ```
 
-會看到類似：
+如果一定要單獨下載 Raw：
 
-```text
-Name      : TokenUsageInsights
-State     : Running
-StartMode : Auto
-StartName : 電腦名稱\使用者名稱
+```cmd
+curl.exe -L "https://raw.githubusercontent.com/ger0182/token-usage-insights-windows-helper/main/setup-token-usage-service.ps1" -o setup-token-usage-service.ps1
 ```
 
-也可以使用：
+可以先檢查：
 
 ```powershell
-Get-Service TokenUsageInsights
+Get-Content ".\setup-token-usage-service.ps1" -TotalCount 5
 ```
+
+正常不應看到 `githubassets.com`、`<script>`、`--fontStack-monospace` 等 HTML/CSS 內容。
 
 ---
 
-## 2. Service 是 Running，但網頁打不開
+## 疑難排解
 
-先執行：
+### `token-usage` 找不到
 
-```cmd
-token-usage status
-```
-
-然後查看 log：
-
-```cmd
-token-usage logs
-```
-
-WinSW logs 位於：
-
-```text
-%LOCALAPPDATA%\TokenUsageInsights\service\logs
-```
-
----
-
-## 3. Port 3003 被占用
-
-```powershell
-Get-NetTCPConnection -LocalPort 3003 -State Listen
-```
-
-如果之前仍有：
-
-```cmd
-npx -y token-usage-insights
-```
-
-請把舊 CMD 關掉。
-
----
-
-## 4. Service 登入失敗
-
-如果最近修改過 Windows 密碼：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-service.ps1" -ReinstallService
-```
-
-再輸入最新 Windows 密碼。
-
-Windows Hello PIN 不能代替 Service Account 密碼。
-
----
-
-## 5. `token-usage` 找不到
-
-重新開一個 CMD / PowerShell。
-
-確認：
+重新開一個 CMD / PowerShell，再執行：
 
 ```cmd
 where token-usage
 ```
 
-正常會找到：
+應該找到：
 
 ```text
 %USERPROFILE%\bin\token-usage.cmd
 ```
 
+### Service 沒有啟動
+
+```powershell
+Get-Service TokenUsageInsights
+```
+
+或：
+
+```cmd
+token-usage service
+```
+
+### 查看 Log
+
+```cmd
+token-usage logs
+```
+
+Log 目錄：
+
+```text
+%LOCALAPPDATA%\TokenUsageInsights\service\logs
+```
+
+### Port 3003 被占用
+
+```powershell
+Get-NetTCPConnection -LocalPort 3003 -State Listen
+```
+
+如果還有舊的：
+
+```cmd
+npx -y token-usage-insights
+```
+
+請先關閉。
+
+### Service Running，但 Dashboard 打不開
+
+```cmd
+token-usage status
+token-usage logs
+```
+
+也可以查看程序：
+
+```powershell
+Get-Process token-usage-insights -ErrorAction SilentlyContinue
+```
+
 ---
 
-# 移除 Windows Service
+## 移除 Windows Service
 
-用系統管理員 PowerShell 執行：
+使用 **系統管理員 PowerShell**：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\uninstall-token-usage-service.ps1"
 ```
 
-預設只會移除：
+預設只移除：
 
 - Windows Service
-- WinSW
-- Helper scripts
-- `token-usage` 指令
-- 舊版 Task Scheduler 設定（如果還存在）
+- WinSW Service helper
+- `token-usage` 管理指令
 
-**不會刪除 TokenUsageInsights 本體與 SQLite 使用紀錄。**
+會保留 TokenUsageInsights 本體與 SQLite 使用紀錄。
 
-資料仍保留在：
-
-```text
-%LOCALAPPDATA%\TokenUsageInsights
-```
-
-如果確定連 TokenUsageInsights 與所有歷史資料都不要：
+如果要連 TokenUsageInsights 與所有 Token 歷史紀錄一起刪掉：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\uninstall-token-usage-service.ps1" -RemoveAll
 ```
 
-> `-RemoveAll` 會刪除 `token_usage_insights.db`，歷史 Token 使用紀錄也會一起消失。
+> `-RemoveAll` 會刪除 `token_usage_insights.db`，歷史紀錄無法由 Helper 復原。
 
 ---
 
-# Repository 內容
+## 原始專案
+
+TokenUsageInsights：
+
+https://github.com/doggy8088/TokenUsageInsights
+
+WinSW：
+
+https://github.com/winsw/winsw
+
+本 Helper 預設使用 WinSW：
 
 ```text
-setup-token-usage-service.ps1       主要 Windows Service 安裝 / 更新設定
-uninstall-token-usage-service.ps1   移除 Windows Service
-setup-token-usage-background.ps1    舊版相容入口，會轉到 Service installer
-README.md                            本說明文件
+v2.12.0
 ```
 
 ---
 
-# 快速備忘
+## Repository 內容
+
+```text
+setup-token-usage-service.ps1       Windows Service 安裝與設定
+setup-token-usage-background.ps1    舊版相容入口
+uninstall-token-usage-service.ps1   移除 Windows Service
+README.md                           繁體中文使用說明
+.github/workflows/
+  powershell-check.yml              PowerShell 5.1 / 7 語法檢查
+```
+
+---
+
+## 快速備忘
 
 第一次安裝：
 
@@ -630,7 +552,7 @@ git clone https://github.com/ger0182/token-usage-insights-windows-helper.git
 cd token-usage-insights-windows-helper
 ```
 
-接著用 **系統管理員 PowerShell**：
+系統管理員 PowerShell：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-service.ps1"
@@ -644,23 +566,14 @@ token-usage open
 token-usage update
 ```
 
-確認是否真正常駐：
+確認 Windows Service 帳號：
 
-```text
-關閉所有 CMD / PowerShell
-→ 重新開 PowerShell
-→ token-usage status
-→ 仍顯示 RUNNING
+```cmd
+token-usage service
 ```
 
----
+正常應看到：
 
-## 原始專案
-
-TokenUsageInsights：
-
-https://github.com/doggy8088/TokenUsageInsights
-
-WinSW：
-
-https://github.com/winsw/winsw
+```text
+StartName : LocalSystem
+```
