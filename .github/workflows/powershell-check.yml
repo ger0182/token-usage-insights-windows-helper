@@ -18,7 +18,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Parse PowerShell scripts
+      - name: Parse with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem -Path . -Filter *.ps1 -Recurse | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "::error file=$($_.FullName)::Windows PowerShell 5.1 parser errors found"
+              $errors | ForEach-Object { Write-Host $_.Message }
+            }
+            else {
+              Write-Host "PS5.1 OK: $($_.FullName)"
+            }
+          }
+
+          if ($failed) {
+            throw "Windows PowerShell 5.1 syntax check failed."
+          }
+
+      - name: Parse with PowerShell 7
         shell: pwsh
         run: |
           $failed = $false
@@ -33,14 +60,14 @@ jobs:
 
             if ($errors.Count -gt 0) {
               $failed = $true
-              Write-Host "::error file=$($_.FullName)::PowerShell parser errors found"
+              Write-Host "::error file=$($_.FullName)::PowerShell 7 parser errors found"
               $errors | ForEach-Object { Write-Host $_.Message }
             }
             else {
-              Write-Host "OK: $($_.FullName)"
+              Write-Host "PS7 OK: $($_.FullName)"
             }
           }
 
           if ($failed) {
-            throw "PowerShell syntax check failed."
+            throw "PowerShell 7 syntax check failed."
           }
