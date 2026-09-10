@@ -1,114 +1,120 @@
 # Token Usage Insights Windows Helper
 
-Windows helper for running [TokenUsageInsights](https://github.com/doggy8088/TokenUsageInsights) in the background without keeping a CMD / PowerShell window open.
+這是一個給 [TokenUsageInsights](https://github.com/doggy8088/TokenUsageInsights) 使用的 Windows 輔助工具，讓 TokenUsageInsights 可以在背景執行，不需要一直保留 CMD 或 PowerShell 視窗。
 
-> This repository is an **unofficial helper**. TokenUsageInsights itself is maintained by the upstream project.
+> 此 Repository 為**非官方輔助工具**。TokenUsageInsights 本體由原始專案維護。
 
-## What this helper does
+## 功能
 
-The setup script:
+這個設定腳本會：
 
-- Installs the official native Windows build of TokenUsageInsights if it is not already installed.
-- Runs TokenUsageInsights in the background through Windows Task Scheduler.
-- Starts it automatically when the current Windows user signs in.
-- Adds a convenient `token-usage` command.
-- Binds the dashboard to `127.0.0.1:3003` so it is only accessible from the local PC.
-- Provides an update command that backs up the SQLite database before upgrading.
+- 如果尚未安裝，自動安裝官方 Windows 原生版 TokenUsageInsights。
+- 透過 Windows 工作排程器在背景執行 TokenUsageInsights。
+- 登入 Windows 後自動啟動。
+- 建立方便使用的 `token-usage` 管理指令。
+- 將 Dashboard 綁定到 `127.0.0.1:3003`，只允許本機存取。
+- 提供更新指令，升級前會先備份 SQLite 資料庫。
 
-## Requirements
+## 系統需求
 
 - Windows 10 / 11
 - PowerShell
-- Internet access during installation and updates
+- 安裝與更新時需要網路連線
 
-Before running the setup script, close any CMD window currently running:
+執行設定腳本前，如果目前有 CMD 正在執行：
 
 ```cmd
 npx -y token-usage-insights
 ```
 
-Otherwise port `3003` may already be occupied.
+請先將它關閉，否則 `3003` Port 可能已被占用。
 
-## Installation
+## 初次安裝
 
-Clone this repository:
+先 Clone 此 Repository：
 
 ```cmd
 git clone https://github.com/ger0182/token-usage-insights-windows-helper.git
 cd token-usage-insights-windows-helper
 ```
 
-Run the setup script from PowerShell:
+接著執行設定腳本：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-background.ps1"
 ```
 
-After setup finishes, open a **new CMD window** so the updated user `PATH` is loaded.
+設定完成後，請重新開啟一個 **新的 CMD 或 PowerShell 視窗**，讓更新後的使用者 `PATH` 生效。
 
-Check the service:
+確認服務狀態：
 
 ```cmd
 token-usage status
 ```
 
-Open the dashboard:
+開啟 Dashboard：
 
 ```cmd
 token-usage open
 ```
 
-Dashboard URL:
+Dashboard 網址：
 
 ```text
 http://127.0.0.1:3003
 ```
 
-## Commands
+## 常用指令
 
-| Command | Purpose |
+| 指令 | 功能 |
 | --- | --- |
-| `token-usage start` | Start TokenUsageInsights in the background |
-| `token-usage stop` | Stop TokenUsageInsights |
-| `token-usage restart` | Restart TokenUsageInsights |
-| `token-usage status` | Check whether the process and dashboard are running |
-| `token-usage open` | Open the dashboard in the default browser |
-| `token-usage update` | Update to the latest official TokenUsageInsights release |
-| `token-usage version` | Show the currently installed version |
+| `token-usage start` | 在背景啟動 TokenUsageInsights |
+| `token-usage stop` | 停止 TokenUsageInsights |
+| `token-usage restart` | 重新啟動 TokenUsageInsights |
+| `token-usage status` | 檢查程式與 Dashboard 是否正常執行 |
+| `token-usage open` | 使用預設瀏覽器開啟 Dashboard |
+| `token-usage update` | 更新到官方最新版本 |
+| `token-usage version` | 顯示目前安裝版本 |
 
-Running `token-usage` without an argument also prints the command list.
+直接執行：
 
-## Windows auto-start
+```cmd
+token-usage
+```
 
-The setup script creates this Windows Task Scheduler task:
+也會顯示可使用的指令列表。
+
+## Windows 自動啟動機制
+
+設定腳本會建立一個 Windows 工作排程器工作：
 
 ```text
 TokenUsageInsights
 ```
 
-Trigger:
+觸發條件為：
 
 ```text
-Current user logon
+目前使用者登入 Windows 時
 ```
 
-This means the dashboard starts automatically after signing in to Windows. A CMD window does not need to remain open.
+因此之後 Windows 重新開機，只要登入使用者帳號，TokenUsageInsights 就會自動在背景啟動，不需要保留 CMD 視窗。
 
-## Installation locations
+## 安裝位置
 
-Main TokenUsageInsights installation directory:
+TokenUsageInsights 主要安裝目錄：
 
 ```text
 %LOCALAPPDATA%\TokenUsageInsights
 ```
 
-Usually this resolves to:
+通常實際位置會是：
 
 ```text
-C:\Users\<username>\AppData\Local\TokenUsageInsights
+C:\Users\<使用者名稱>\AppData\Local\TokenUsageInsights
 ```
 
-Important files include:
+重要檔案包括：
 
 ```text
 %LOCALAPPDATA%\TokenUsageInsights\token-usage-insights.exe
@@ -117,154 +123,182 @@ Important files include:
 %LOCALAPPDATA%\TokenUsageInsights\token-usage-update.ps1
 ```
 
-The helper command is installed at:
+本 Repository 建立的管理指令位於：
 
 ```text
 %USERPROFILE%\bin\token-usage.cmd
 ```
 
-The official installer also places its own `token-usage-insights.cmd` shim in `%USERPROFILE%\bin`.
+官方安裝程式也會在 `%USERPROFILE%\bin` 建立自己的：
 
-## Updating TokenUsageInsights
+```text
+token-usage-insights.cmd
+```
 
-Use:
+## 更新 TokenUsageInsights
+
+之後官方有新版時，只需要執行：
 
 ```cmd
 token-usage update
 ```
 
-The helper performs the following sequence:
+更新流程如下：
 
 ```text
-Stop current process
+停止目前執行中的 TokenUsageInsights
         ↓
-Back up SQLite database
+備份 SQLite 資料庫
         ↓
-Download the official latest release
+下載官方最新 Release
         ↓
-Run the official Windows installer
+執行官方 Windows 安裝程式
         ↓
-Keep the existing usage database
+保留原本 Token 使用紀錄
         ↓
-Restart the scheduled task
+重新啟動工作排程器
         ↓
-Check http://127.0.0.1:3003
+檢查 http://127.0.0.1:3003
 ```
 
-Before each update, the database is copied to:
+每次更新前，資料庫會另外備份成：
 
 ```text
 %LOCALAPPDATA%\TokenUsageInsights\token_usage_insights.db.pre-update.bak
 ```
 
-The upstream `get.ps1` installer is designed to be safe to re-run for upgrades.
+官方 `get.ps1` 本身支援重複執行，因此可用來升級新版。
 
-To check the installed version:
+查看目前安裝版本：
 
 ```cmd
 token-usage version
 ```
 
-## Data / database
+## Token 使用紀錄與資料庫
 
-Token usage history is stored in:
+Token 使用歷史紀錄儲存在：
 
 ```text
 %LOCALAPPDATA%\TokenUsageInsights\token_usage_insights.db
 ```
 
-Do not delete this file if you want to keep existing usage history.
+如果想保留歷史使用紀錄，**不要刪除這個檔案**。
 
-For an extra manual backup:
+也可以手動再備份一份到桌面：
 
 ```cmd
 copy "%LOCALAPPDATA%\TokenUsageInsights\token_usage_insights.db" "%USERPROFILE%\Desktop\token_usage_insights.db.bak"
 ```
 
-## Re-running setup
+## 更新這個 Helper Repository
 
-It is safe to re-run:
+如果此 Repository 未來有修改，可以先更新：
+
+```cmd
+git pull
+```
+
+然後重新執行設定腳本：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-background.ps1"
 ```
 
-This refreshes the helper scripts and Task Scheduler configuration. If TokenUsageInsights is already installed, the setup does not reinstall it unnecessarily.
+重新執行設定腳本是安全的，它會更新：
 
-Use this after pulling a newer version of this helper repository:
+- `token-usage` 管理指令
+- 更新腳本
+- 背景啟動腳本
+- Windows 工作排程器設定
 
-```cmd
-git pull
-powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-background.ps1"
-```
+如果 TokenUsageInsights 已經存在，不會因為重跑 Helper 設定就不必要地重新安裝本體。
 
-## Troubleshooting
+> `token-usage update` 是更新 **TokenUsageInsights 本體**；`git pull` + 重新執行設定腳本則是更新 **這個 Windows Helper**。兩者用途不同。
 
-### `token-usage` is not recognized
+## 疑難排解
 
-Open a new CMD / PowerShell window after running the setup script.
+### `token-usage` 顯示不是內部或外部命令
 
-The setup adds this directory to the user `PATH`:
+執行設定腳本後，重新開啟一個新的 CMD 或 PowerShell 視窗。
+
+腳本會將以下目錄加入使用者 `PATH`：
 
 ```text
 %USERPROFILE%\bin
 ```
 
-You can verify the command with:
+可以使用以下指令確認：
 
 ```cmd
 where token-usage
 ```
 
-### Port 3003 is already in use
+正常應該能找到：
 
-Check which process is listening on the port:
+```text
+C:\Users\<使用者名稱>\bin\token-usage.cmd
+```
+
+### Port 3003 已被占用
+
+使用 PowerShell 檢查是哪個程序正在監聽：
 
 ```powershell
 Get-NetTCPConnection -LocalPort 3003 -State Listen
 ```
 
-If the old `npx` version is still running, close that CMD window before running the setup again.
+如果舊的：
 
-### Process is running but the page is not ready
+```cmd
+npx -y token-usage-insights
+```
 
-Check:
+還在執行，請先關閉原本的 CMD 視窗，再重新執行設定腳本。
+
+### 程序有執行，但網頁尚未正常開啟
+
+先檢查：
 
 ```cmd
 token-usage status
 ```
 
-Then try:
+再嘗試：
 
 ```cmd
 token-usage restart
 ```
 
-### Check the Windows scheduled task
+### 檢查 Windows 工作排程器
 
-PowerShell:
+PowerShell：
 
 ```powershell
 Get-ScheduledTask -TaskName "TokenUsageInsights"
 ```
 
-Or open Windows **Task Scheduler** and look for `TokenUsageInsights`.
+也可以直接開啟 Windows **工作排程器**，尋找：
 
-## Uninstall helper / auto-start
+```text
+TokenUsageInsights
+```
 
-First stop TokenUsageInsights:
+## 完整移除
+
+先停止 TokenUsageInsights：
 
 ```cmd
 token-usage stop
 ```
 
-Remove the scheduled task:
+移除 Windows 工作排程器：
 
 ```powershell
 Unregister-ScheduledTask -TaskName "TokenUsageInsights" -Confirm:$false
 ```
 
-Remove helper files:
+移除 Helper 建立的檔案：
 
 ```powershell
 Remove-Item "$HOME\bin\token-usage.cmd" -Force -ErrorAction SilentlyContinue
@@ -272,29 +306,53 @@ Remove-Item "$env:LOCALAPPDATA\TokenUsageInsights\token-usage-background.cmd" -F
 Remove-Item "$env:LOCALAPPDATA\TokenUsageInsights\token-usage-update.ps1" -Force -ErrorAction SilentlyContinue
 ```
 
-If you also want to completely remove TokenUsageInsights and **do not need the usage history anymore**, remove the application directory:
+如果連 TokenUsageInsights 本體也要完整刪除，而且**不需要保留 Token 使用歷史紀錄**，可以再執行：
 
 ```powershell
 Remove-Item "$env:LOCALAPPDATA\TokenUsageInsights" -Recurse -Force
 ```
 
-> Warning: the final command also deletes `token_usage_insights.db` and therefore removes the stored usage history.
+> **注意：**上面的最後一個指令也會刪除 `token_usage_insights.db`，因此 Token 使用歷史紀錄也會一起消失。
 
-## Upstream project
+如果想保留紀錄，請先備份：
 
-TokenUsageInsights:
+```text
+%LOCALAPPDATA%\TokenUsageInsights\token_usage_insights.db
+```
+
+## 原始專案
+
+TokenUsageInsights 官方專案：
 
 https://github.com/doggy8088/TokenUsageInsights
 
-Official Windows bootstrap installer used by this helper:
+此 Helper 更新 TokenUsageInsights 時使用的官方 Windows Bootstrap Installer：
 
 ```powershell
 irm https://raw.githubusercontent.com/doggy8088/TokenUsageInsights/main/scripts/get.ps1 | iex
 ```
 
-## Repository files
+## Repository 內容
 
 ```text
-setup-token-usage-background.ps1   Main Windows setup/helper script
-README.md                           Installation and usage notes
+setup-token-usage-background.ps1   Windows 背景執行與管理設定腳本
+README.md                           安裝、更新與使用說明
+```
+
+## 快速備忘
+
+第一次安裝：
+
+```cmd
+git clone https://github.com/ger0182/token-usage-insights-windows-helper.git
+cd token-usage-insights-windows-helper
+powershell -ExecutionPolicy Bypass -File ".\setup-token-usage-background.ps1"
+```
+
+平常最常用：
+
+```cmd
+token-usage status
+token-usage open
+token-usage update
 ```
